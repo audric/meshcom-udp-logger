@@ -1,0 +1,29 @@
+[Unit]
+Description=MeshCom UDP logger to MQTT + SQLite
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/meshcom-udp-logger/meshcom-udp-logger \
+  -bind :1799 \
+  -db /opt/meshcom-udp-logger/meshcom-udp-logger.sqlite \
+  -mqtt tcp://127.0.0.1:1883 \
+  -topic-root meshcom/rx \
+  -qos 1 \
+  -batch 100 \
+  -flush 1s
+Restart=always
+RestartSec=2
+User=audric
+Group=audric
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/meshcom-udp-logger
+
+[Install]
+WantedBy=multi-user.target
