@@ -183,6 +183,8 @@ func normalize(rx, ip string, port int, raw string, m map[string]any) Record {
 	// positions: lat/lon/alt; telemetry: batt, etc.
 	lat := getF("lat")
 	lon := getF("lon")
+        if lon == nil { lon = getF("lng") }
+        if lon == nil { lon = getF("long") }
 	alt := getF("alt")
 	batt := getF("batt")
 
