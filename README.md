@@ -41,6 +41,7 @@ This logger provides:
 
 1. Clone the repository:
 ```bash
+cd /opt
 git clone https://github.com/audric/meshcom-udp-logger.git
 cd meshcom-udp-logger
 ```
@@ -48,6 +49,7 @@ cd meshcom-udp-logger
 2. Build the binary:
 ```bash
 go build -o meshcom-udp-logger meshcom-udp-logger.go
+strip meshcom-udp-logger
 ```
 
 Or use the provided build script:
@@ -61,9 +63,6 @@ chmod +x meshcom-udp-logger.make.sh
 A systemd service file is provided for running the logger as a background service on Linux systems:
 
 ```bash
-# Copy the binary to a system location
-sudo cp meshcom-udp-logger /usr/local/bin/
-
 # Copy the service file
 sudo cp meshcom-udp-logger.service /etc/systemd/system/
 
@@ -302,9 +301,6 @@ git clone https://github.com/audric/meshcom-udp-logger.git
 cd meshcom-udp-logger
 go mod init meshcom-udp-logger  # If go.mod doesn't exist
 go build
-
-# Run tests (if available)
-go test ./...
 ```
 
 ## License
