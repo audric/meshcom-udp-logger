@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -10,6 +11,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -48,7 +51,90 @@ func main() {
 		batchSize  = flag.Int("batch", 100, "SQLite batch insert size")
 		flushEvery = flag.Duration("flush", 1*time.Second, "SQLite flush interval")
 	)
+
+	// Try to locate an INI file and parse it (values there will be used
+	// as defaults unless the corresponding flag is explicitly set).
+	ini := map[string]string{}
+	if p := findIniPath(); p != "" {
+		if m, err := parseINI(p); err == nil {
+			ini = m
+			log.Printf("loaded config from %s", p)
+		} else {
+			log.Printf("failed to parse ini %s: %v", p, err)
+		}
+	}
+
 	flag.Parse()
+
+	// Determine which flags were explicitly set on the command line.
+	visited := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+
+	getIni := func(keys ...string) (string, bool) {
+		for _, k := range keys {
+			nk := normalizeKey(k)
+			if v, ok := ini[nk]; ok && strings.TrimSpace(v) != "" {
+				return v, true
+			}
+		}
+		return "", false
+	}
+
+	// Apply INI values only for flags that were NOT set by the user.
+	if !visited["bind"] {
+		if v, ok := getIni("bind"); ok {
+			*bindAddr = v
+		}
+	}
+	if !visited["db"] {
+		if v, ok := getIni("db"); ok {
+			*dbPath = v
+		}
+	}
+	if !visited["mqtt"] {
+		if v, ok := getIni("mqtt"); ok {
+			*mqttURL = v
+		}
+	}
+	if !visited["mqtt-user"] {
+		if v, ok := getIni("mqtt-user", "mqtt_user"); ok {
+			*mqttUser = v
+		}
+	}
+	if !visited["mqtt-pass"] {
+		if v, ok := getIni("mqtt-pass", "mqtt_pass"); ok {
+			*mqttPass = v
+		}
+	}
+	if !visited["topic-root"] {
+		if v, ok := getIni("topic-root", "topic_root"); ok {
+			*topicRoot = v
+		}
+	}
+	if !visited["qos"] {
+		if v, ok := getIni("qos"); ok {
+			if i, err := strconv.Atoi(v); err == nil {
+				*mqttQos = i
+			}
+		}
+	}
+	if !visited["batch"] {
+		if v, ok := getIni("batch"); ok {
+			if i, err := strconv.Atoi(v); err == nil {
+				*batchSize = i
+			}
+		}
+	}
+	if !visited["flush"] {
+		if v, ok := getIni("flush"); ok {
+			if d, err := time.ParseDuration(v); err == nil {
+				*flushEvery = d
+			}
+		}
+	}
+
+	// Print effective configuration
+	printEffectiveConfig(*bindAddr, *dbPath, *mqttURL, *mqttUser, *mqttPass, *topicRoot, *mqttQos, *batchSize, *flushEvery)
 
 	ctx, cancel := signalContext()
 	defer cancel()
@@ -183,8 +269,12 @@ func normalize(rx, ip string, port int, raw string, m map[string]any) Record {
 	// positions: lat/lon/alt; telemetry: batt, etc.
 	lat := getF("lat")
 	lon := getF("lon")
-        if lon == nil { lon = getF("lng") }
-        if lon == nil { lon = getF("long") }
+	if lon == nil {
+		lon = getF("lng")
+	}
+	if lon == nil {
+		lon = getF("long")
+	}
 	alt := getF("alt")
 	batt := getF("batt")
 
@@ -400,6 +490,87 @@ func dirOf(path string) string {
 		return "."
 	}
 	return path[:i]
+}
+
+func normalizeKey(k string) string {
+	k = strings.ToLower(strings.TrimSpace(k))
+	k = strings.ReplaceAll(k, "_", "-")
+	return k
+}
+
+// findIniPath checks a few conventional locations for meshcom-udp-logger.ini
+func findIniPath() string {
+	// 1. Current working directory
+	cwd, err := os.Getwd()
+	if err == nil {
+		p := filepath.Join(cwd, "meshcom-udp-logger.ini")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	// 2. /etc
+	p := "/etc/default/meshcom-udp-logger.ini"
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	// 3. Directory of the executable
+	if ex, err := os.Executable(); err == nil {
+		exdir := filepath.Dir(ex)
+		p := filepath.Join(exdir, "meshcom-udp-logger.ini")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// parseINI reads a simple key=value ini (no sections required).
+func parseINI(path string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	m := make(map[string]string)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			// skip section headers
+			continue
+		}
+		// split at first '='
+		if idx := strings.Index(line, "="); idx >= 0 {
+			k := strings.TrimSpace(line[:idx])
+			v := strings.TrimSpace(line[idx+1:])
+			// strip optional surrounding quotes
+			if len(v) >= 2 {
+				if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
+					v = v[1 : len(v)-1]
+				}
+			}
+			m[normalizeKey(k)] = v
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func printEffectiveConfig(bind, db, mqttURL, mqttUser, mqttPass, topic string, qos, batch int, flush time.Duration) {
+	masked := "<empty>"
+	if mqttPass != "" {
+		masked = "***"
+	}
+	log.Printf("Effective configuration:\n  bind=%s\n  db=%s\n  mqtt=%s\n  mqtt-user=%s\n  mqtt-pass=%s\n  topic-root=%s\n  qos=%d\n  batch=%d\n  flush=%s",
+		bind, db, mqttURL, mqttUser, masked, topic, qos, batch, flush.String())
 }
 
 func signalContext() (context.Context, context.CancelFunc) {
